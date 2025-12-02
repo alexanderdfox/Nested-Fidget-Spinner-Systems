@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nested Fidget Spinners - Maxwell's Demon with Audio</title>
+<style>
+	body { margin:0; background: #0B1020; color: #E6EEF8; font-family: Arial, sans-serif; }
+	canvas { display:block; margin:0 auto; background:#0B1020; }
+	#panel { position:absolute; top:10px; left:10px; width:280px; padding:10px; background:#141E2D; border-radius:6px; }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<div id="panel"></div>
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+const WIDTH = canvas.width;
+const HEIGHT = canvas.height;
+const CENTER = {x: WIDTH/2, y: HEIGHT/2};
+const FPS = 60;
+const SYSTEM_COLORS = ['#FF6B6B', '#FFD93D', '#6BE36B'];
+const LOBE_RADIUS = 110;
+const ARM_LENGTH = 170;
+const BASE_FREQUENCIES = [220, 330, 440]; // Hz
+
+// ------------------- Audio Setup -------------------
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+function playTone(frequency, volume=0.2, pan=0.5, duration=0.05) {
+	const oscillator = audioCtx.createOscillator();
+	const gainNode = audioCtx.createGain();
+	const panNode = audioCtx.createStereoPanner();
+
+	oscillator.type = 'sine';
+	oscillator.frequency.value = frequency;
+
+	gainNode.gain.value = volume;
+	panNode.pan.value = pan;
+
+	oscillator.connect(gainNode).connect(panNode).connect(audioCtx.destination);
+	oscillator.start();
+	oscillator.stop(audioCtx.currentTime + duration);
+}
+
+// ------------------- Particle Class -------------------
+class Particle {
+	constructor(x, y, vx, vy, radius){
+		this.x = x; this.y = y;
+		this.vx = vx; this.vy = vy;
+		this.radius = radius;
+	}
+	kineticEnergy() { return 0.5*(this.vx*this.vx + this.vy*this.vy); }
+	update(center, lobe_radius, dt){
+		this.x += this.vx * dt;
+		this.y += this.vy * dt;
+		// Bounce
+		const dx = this.x - center.x;
+		const dy = this.y - center.y;
+		const dist = Math.hypot(dx, dy);
+		if(dist + this.radius > lobe_radius){
+			const nx = dx/dist, ny = dy/dist;
+			const dot = this.vx*nx + this.vy*ny;
+			this.vx -= 2*dot*nx;
+			this.vy -= 2*dot*ny;
+			this.x = center.x + nx*(lobe_radius-this.radius);
+			this.y = center.y + ny*(lobe_radius-this.radius);
+		}
+		this.vx += (Math.random()-0.5)*0.01;
+		this.vy += (Math.random()-0.5)*0.01;
+	}
+}
+
+// ------------------- Spinner Node -------------------
+class SpinnerNode {
+	constructor(level, center, arm_length, lobe_radius, max_level){
+		this.level = level;
+		this.center = {...center};
+		this.arm_length = arm_length;
+		this.lobe_radius = lobe_radius;
+		this.theta = 0;
+		this.particles = [];
+		this.children = level < max_level ? [] : null;
+		for(let i=0;i<3;i++){
+			this.particles[i] = [];
+			if(this.children){
+				this.children[i] = [];
+				const lc = this.getLobeCenter(i);
+				for(let j=0;j<3;j++){
+					this.children[i].push(new SpinnerNode(level+1, lc, arm_length*0.4, lobe_radius*0.4, max_level));
+				}
+			}
+		}
+		this.initParticles();
+	}
+	getLobeCenter(idx){
+		const angle = idx*2*Math.PI/3 + this.theta;
+		return {x: this.center.x + Math.cos(angle)*this.arm_length,
+				y: this.center.y + Math.sin(angle)*this.arm_length};
+	}
+	initParticles(num_particles=6){
+		for(let lobe_idx=0;lobe_idx<3;lobe_idx++){
+			const lc = this.getLobeCenter(lobe_idx);
+			this.particles[lobe_idx] = [];
+			for(let i=0;i<num_particles;i++){
+				const angle = Math.random()*2*Math.PI;
+				const speed = Math.random()*0.3;
+				const r = 2 + Math.random()*2;
+				const x = lc.x + Math.cos(angle)*(this.lobe_radius-r);
+				const y = lc.y + Math.sin(angle)*(this.lobe_radius-r);
+				this.particles[lobe_idx].push(new Particle(x,y,Math.cos(angle)*speed,Math.sin(angle)*speed,r));
+			}
+		}
+	}
+	maxwellsDemon(){
+		for(let lobe_idx=0;lobe_idx<3;lobe_idx++){
+			const lc = this.getLobeCenter(lobe_idx);
+			for(let p of this.particles[lobe_idx]){
+				const dx = p.x - lc.x;
+				if(p.kineticEnergy() > 0.05) p.x = lc.x + Math.abs(dx);
+				else p.x = lc.x - Math.abs(dx);
+			}
+		}
+		if(this.children){
+			for(let child_list of this.children){
+				for(let child of child_list){
+					child.maxwellsDemon();
+				}
+			}
+		}
+	}
+	update(dt){
+		this.theta += dt*(1 + this.level*0.3);
+		for(let lobe_idx=0;lobe_idx<3;lobe_idx++){
+			const lc = this.getLobeCenter(lobe_idx);
+			for(let p of this.particles[lobe_idx]){
+				p.update(lc,this.lobe_radius,dt);
+				// Play tone based on KE
+				const freq = BASE_FREQUENCIES[lobe_idx] + p.kineticEnergy()*300;
+				const vol = Math.min(0.5, p.kineticEnergy()*8);
+				playTone(freq, vol, lobe_idx/2); // pan: 0,0.5,1
+			}
+		}
+		if(this.children){
+			for(let lobe_idx=0;lobe_idx<3;lobe_idx++){
+				const lc = this.getLobeCenter(lobe_idx);
+				for(let child of this.children[lobe_idx]){
+					child.center = lc;
+					child.update(dt);
+				}
+			}
+		}
+		this.maxwellsDemon();
+	}
+	render(ctx){
+		for(let i=0;i<3;i++){
+			const lc = this.getLobeCenter(i);
+			ctx.strokeStyle = SYSTEM_COLORS[i];
+			ctx.beginPath();
+			ctx.moveTo(this.center.x, this.center.y);
+			ctx.lineTo(lc.x, lc.y);
+			ctx.stroke();
+			ctx.beginPath();
+			ctx.arc(lc.x, lc.y, this.lobe_radius, 0, 2*Math.PI);
+			ctx.stroke();
+			for(let p of this.particles[i]){
+				ctx.fillStyle = SYSTEM_COLORS[i];
+				ctx.beginPath();
+				ctx.arc(p.x, p.y, p.radius,0,2*Math.PI);
+				ctx.fill();
+			}
+		}
+		if(this.children){
+			for(let child_list of this.children){
+				for(let child of child_list){
+					child.render(ctx);
+				}
+			}
+		}
+	}
+	totalEnergy(){
+		let energy = 0;
+		for(let arr of this.particles) for(let p of arr) energy += p.kineticEnergy();
+		if(this.children){
+			for(let child_list of this.children){
+				for(let child of child_list) energy += child.totalEnergy();
+			}
+		}
+		return energy;
+	}
+	totalParticles(){
+		let count = 0;
+		for(let arr of this.particles) count += arr.length;
+		if(this.children){
+			for(let child_list of this.children){
+				for(let child of child_list) count += child.totalParticles();
+			}
+		}
+		return count;
+	}
+}
+
+// ------------------- Main -------------------
+const spinners = [new SpinnerNode(0,CENTER,ARM_LENGTH,LOBE_RADIUS,2),
+				  new SpinnerNode(0,CENTER,ARM_LENGTH,LOBE_RADIUS,2),
+				  new SpinnerNode(0,CENTER,ARM_LENGTH,LOBE_RADIUS,2)];
+
+function loop(){
+	ctx.clearRect(0,0,WIDTH,HEIGHT);
+	const dt = 1/FPS;
+	let total_energy = 0, total_particles = 0;
+	for(let sp of spinners){
+		sp.update(dt);
+		sp.render(ctx);
+		total_energy += sp.totalEnergy();
+		total_particles += sp.totalParticles();
+	}
+	document.getElementById('panel').innerHTML = `
+		<div>Total Particles: ${total_particles}</div>
+		<div>Total Energy: ${total_energy.toFixed(2)}</div>
+	`;
+	requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+</body>
+</html>
